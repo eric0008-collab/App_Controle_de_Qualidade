@@ -2,9 +2,11 @@ import flet as ft
 import datetime
 from flet import KeyboardType
 from google.oauth2.service_account import Credentials
-from auto_complemento import get_nome_produto, add_produto
+from auto_complemento import get_produto
 from googleapiclient.discovery import build
 
+client_json = {
+        }
 
 def root(page: ft.Page):
     page.title = "CONTROLE DE QUALIDADE"
@@ -22,9 +24,16 @@ def root(page: ft.Page):
             page.update()
 
         def save_new_produto(e):
-            codigo = novo_codigo.value.strip()
-            nome = novo_produto.value.strip()
-
+            global client_json
+            # Autenticando
+            scopes = ["scopes"]
+            creds = Credentials.from_service_account_info(
+                client_json, scopes=scopes)
+            service = build('sheets', 'v4', credentials=creds)
+            sheet_name = 'Aba4'
+            spreadsheet_id = 'spreadsheet_id'
+            codigo = novo_codigo.value
+            nome = novo_produto.value
             if not codigo or not nome:
                 page.snackbar = ft.SnackBar(
                     content=ft.Text("Preencha código e nome!"),
@@ -32,14 +41,22 @@ def root(page: ft.Page):
                     behavior=ft.SnackBarBehavior.FLOATING
                 )
             else:
-                add_produto(codigo, nome)
+                novos_dados = [[codigo,nome]]
+                body = {'values': novos_dados}
+                # Append data na planilha
+                service.spreadsheets().values().append(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A1",
+                    valueInputOption="RAW",
+                    body=body
+                ).execute()
                 page.snackbar = ft.SnackBar(
                     content=ft.Text(f"Produto '{nome}' ({codigo}) salvo!"),
                     bgcolor=ft.colors.GREEN,
                     behavior=ft.SnackBarBehavior.FLOATING,
                     duration=2000
                 )
-                # opcional: limpar campos
+                #limpar campos
                 novo_codigo.value = ""
                 novo_produto.value = ""
 
@@ -112,18 +129,6 @@ def root(page: ft.Page):
             valor.value = ""  # opcional: limpa o texto quando desabilita
         page.update()
 
-    def total_de_cp_slider_change(e):
-        count = int(e.control.value)
-        total_de_cp_slider.value = count
-
-        # lista ordenada dos campos CP
-        cps = [L1, L2, L3, L4, L5, L6]
-
-        # para cada índice, torna visível se estiver dentro do count
-        for idx, cp in enumerate(cps, start=1):
-            cp.visible = (idx <= count)
-        page.update()
-
     def peso_change(e):
         e.control.value = formatar_peso(e.control.value)
         page.update()
@@ -138,6 +143,10 @@ def root(page: ft.Page):
         resultado_dropdow.disabled = (e.control.value == "PARADO")
         if resultado_dropdow.disabled:
             resultado_dropdow.value = None
+        page.update()
+
+    def maquina_change(e):
+        maquina_dropbox.value = e.control.value
         page.update()
 
     def turma_change(e):
@@ -170,30 +179,28 @@ def root(page: ft.Page):
             Maquina.value = e.selection
         print("Máquina selecionada:", Maquina.value)
         page.update()
-
     # Callback que preenche o campo Produto automaticamente
-
-    def on_codigo_change(e):
-        # Recupera o nome do produto a partir do código
-        nome_produto = get_nome_produto(Codigo.value)
-        Produto.value = nome_produto
+    def pesquisar_e_preencher(e: ft.ControlEvent, page: ft.Page):
+        pdt_cg = e.control.value
+        pdt = get_produto(pdt_cg)
+        if pdt:
+            Produto.value = pdt
+        else:
+            Produto.value = "Produto não encontrado"
         page.update()
-
     def funcion_enviar(e):
         # Dados da conta de serviço
-        client_json = {
-            #CHAVE JSON
-        }
-
+        global client_json
+        
         # Autenticando
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        scopes = ["scopes"]
         creds = Credentials.from_service_account_info(
             client_json, scopes=scopes)
         service = build('sheets', 'v4', credentials=creds)
 
         # Referência da Planilha
         if escolher_Widgets.value == "Ensaio de Resistência ao Impacto":
-            sheet_name = 'Aba1'
+            sheet_name = 'Aba2'
             spreadsheet_id = 'spreadsheet_id'
             # Formatação dos valores de peso e espessuras
             peso_formatado = formatar_peso(Peso.value)
@@ -214,16 +221,23 @@ def root(page: ft.Page):
             media_val = sum(cp_vals) / len(cp_vals) if cp_vals else 0
             media_str = f"{media_val:.2f}".replace('.', ',')
 
-            # Número de CPs que o usuário pediu
-            cp_count = int(total_de_cp_slider.value)
-
             # Lista de switches, na mesma ordem das linhas L1, L2, …
             switches = [S1, S2, S3, S4, S5, S6]
 
-            # Conta quantos switches (dentro do cp_count) estão ligados
-            selected_count = sum(1 for sw in switches[:cp_count] if sw.value)
+            # Pega o valor digitado em total_de_cp_entry (número de CPs a considerar)
+            try:
+                total = int(total_de_cp_entry.value)
+            except (ValueError, TypeError):
+                # se não for número válido, considera todos
+                total = len(switches)
+
+            # Garante que 'total' não seja maior que a quantidade de switches disponíveis
+            total = min(total, len(switches))
+
+            # Conta quantos switches estão ligados
+            selected_count = sum(1 for sw in switches[:total] if sw.value)
             # O resto é o número de CPs não selecionados
-            unselected_count = cp_count - selected_count
+            unselected_count = total - selected_count
             # Define status: aprovado se houver pelo menos um selecionado
             status = "APROVADO" if selected_count > 0 else "REPROVADO"
             # Coletando os dados dos widgets Content2
@@ -231,12 +245,12 @@ def root(page: ft.Page):
             Z1 = horario.value
             Z2 = turma_dropdow.value
             Z3 = Responavel.value
-            Z4 = Maquina.value
+            Z4 = maquina_dropbox.value
             Z5 = Codigo.value
             Z6 = Produto.value
             Z7 = n_molde.value
             Z8 = peso_formatado
-            Z9 = total_de_cp_slider.value
+            Z9 = total_de_cp_entry.value
             Z10, Z11, Z12, Z13, Z14, Z15 = formatted_cps
             Z16 = media_str
             Z17 = selected_count
@@ -253,13 +267,13 @@ def root(page: ft.Page):
                 body=body
             ).execute()
         elif escolher_Widgets.value == "Controle de Bolachas e Fichas":
-            sheet_name = 'aba 2'
+            sheet_name = 'Aba 3'
             spreadsheet_id = 'spreadsheet_id'
             X0 = data.value
             X1 = turma_dropdow.value
             X2 = horario.value
             X3 = Responavel.value
-            X4 = Maquina.value
+            X4 = maquina_dropbox.value
             X5 = Codigo.value
             X6 = Produto.value
             X7 = coletadas.value
@@ -280,15 +294,15 @@ def root(page: ft.Page):
                 body=body
             ).execute()
         else:
-            sheet_name = 'Aba 3'
-            spreadsheet_id = 'spreadsheet_id'
+            sheet_name = 'Aba1'
+            spreadsheet_id = 'spreadsheet_id' #1UN7MffDuS_V4oc2ccNszm5gFYkjd1a-JKDEZSRcyjFk
 
             # Coletando os dados dos widgets Content
             T0 = data.value
             T1 = horario.value
             T2 = turma_dropdow.value
             T3 = Responavel.value
-            T4 = Maquina.value
+            T4 = maquina_dropbox.value
             T5 = Codigo.value
             T6 = Produto.value
             T7 = Status_de_maquinas_dropdow.value
@@ -312,7 +326,7 @@ def root(page: ft.Page):
         turma_dropdow.value = None
         turma_dropdow.value = "empty"
         Responavel.value = ""
-        Maquina.value = ""
+        maquina_dropbox.value = "empty"
         Codigo.value = ""
         Produto.value = ""
         Status_de_maquinas_dropdow.value = None
@@ -322,7 +336,7 @@ def root(page: ft.Page):
         seleção_Operador_realizou.value = None
         n_molde.value = ""
         Peso.value = None
-        total_de_cp_slider.value = total_de_cp_slider.min
+        total_de_cp_text.value = ""
         CP1.value = None
         CP2.value = None
         CP3.value = None
@@ -391,6 +405,28 @@ def root(page: ft.Page):
     data = ft.TextField(label='Data')
     horario = ft.TextField(label='Horario')
     Responavel = ft.TextField(label='Responsavel')
+    maquina_dropbox = ft.Dropdown(
+        label="maquina",
+        options=[
+            ft.dropdown.Option("Ferry 1"),
+            ft.dropdown.Option("Ferry 2"),
+            ft.dropdown.Option("Ferry 3"),
+            ft.dropdown.Option("Ferry 4"),
+            ft.dropdown.Option("Ferry 5"),
+            ft.dropdown.Option("Rotoline 1"),
+            ft.dropdown.Option("Rotoline 2"),
+            ft.dropdown.Option("Rotoline 3"),
+            ft.dropdown.Option("Rotoline 4"),
+            ft.dropdown.Option("Rotoline 5"),
+            ft.dropdown.Option("Rotoline 6"),
+            ft.dropdown.Option("Rotoline 7"),
+            ft.dropdown.Option("Haitian 300"),
+            ft.dropdown.Option(text="\u200B", key="empty")
+        ],
+        on_change=maquina_change,  # Função que atualiza a seleção
+        width=150
+
+    )
     Maquina = ft.AutoComplete(
 
         suggestions=[
@@ -411,7 +447,7 @@ def root(page: ft.Page):
         on_select=on_maquina_select
     )
     Codigo = ft.TextField(
-        label='Codigo', on_change=on_codigo_change, width=140, keyboard_type=KeyboardType.NUMBER,)
+        label='Codigo', on_submit=lambda e: pesquisar_e_preencher(e, page), width=140, keyboard_type=KeyboardType.NUMBER,) #on_change=on_codigo_change
     Produto = ft.TextField(label='Produto', width=380)
     Text_Operador_realizou = ft.Text('Operador Realizou?', size=15)
     titulo = ft.Text('Ensaio de Desplacamento da Pintura UV', size=40,
@@ -550,8 +586,7 @@ def root(page: ft.Page):
             Responavel,
             H_D,
             turma_dropdow,
-            ft.Text('Maquinas:', size=16),  # c0c1c1
-            Maquina,
+            maquina_dropbox,
             Codigo,
             Produto,
             Status_de_maquinas_dropdow,
@@ -591,8 +626,7 @@ def root(page: ft.Page):
                         keyboard_type=KeyboardType.NUMBER,
                         )
     total_de_cp_text = ft.Text("Total de CP:", size=15)
-    total_de_cp_slider = ft.Slider(
-        min=0, max=6, divisions=6, label="{value}", on_change=total_de_cp_slider_change, active_color='BLUE')
+    total_de_cp_entry = ft.TextField(width=60)
     CP1 = ft.TextField(label="ESPESSURA CP 01",
                        border=ft.InputBorder.NONE,
                        filled=True,
@@ -643,12 +677,13 @@ def root(page: ft.Page):
     S5 = ft.Switch(adaptive=True, label="APROVADO", value='1')
     S6 = ft.Switch(adaptive=True, label="APROVADO", value='1')
     # linhas dos Slider e TextField
-    L1 = ft.Row(visible=False, controls=[CP1, S1,])
-    L2 = ft.Row(visible=False, controls=[CP2, S2])
-    L3 = ft.Row(visible=False, controls=[CP3, S3])
-    L4 = ft.Row(visible=False, controls=[CP4, S4])
-    L5 = ft.Row(visible=False, controls=[CP5, S5])
-    L6 = ft.Row(visible=False, controls=[CP6, S6])
+    L1 = ft.Row(controls=[CP1, S1,])
+    L2 = ft.Row(controls=[CP2, S2])
+    L3 = ft.Row(controls=[CP3, S3])
+    L4 = ft.Row(controls=[CP4, S4])
+    L5 = ft.Row(controls=[CP5, S5])
+    L6 = ft.Row(controls=[CP6, S6])
+    R_total_de_cp = ft.Row(controls=[total_de_cp_text, total_de_cp_entry])
     # Coluna 2
     C2 = ft.Column(
         controls=[
@@ -657,14 +692,14 @@ def root(page: ft.Page):
             Responavel,
             H_D,
             turma_dropdow,
-            ft.Text('Maquinas:', size=16),
-            Maquina,
+            maquina_dropbox,
             Codigo,
             Produto,
             n_molde,
             Peso,
-            total_de_cp_text,
-            total_de_cp_slider,
+            # total_de_cp_text,
+            # total_de_cp_slider,
+            R_total_de_cp,
             L1,
             L2,
             L3,
@@ -744,8 +779,7 @@ def root(page: ft.Page):
             Responavel,
             H_D,
             turma_dropdow,
-            ft.Text('Maquinas:', size=16),
-            Maquina,
+            maquina_dropbox,
             Codigo,
             Produto,
             ROW_COLETADAS,
